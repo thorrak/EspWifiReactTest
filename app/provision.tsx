@@ -1,5 +1,12 @@
 import { useEffect, useState, Component, type ReactNode } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity } from 'react-native';
+import {
+  StyleSheet,
+  View,
+  Text,
+  TouchableOpacity,
+  Platform,
+  PermissionsAndroid,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { BleManager, State } from 'react-native-ble-plx';
 import { ProvisioningNavigator } from 'esp-wifi-manager-react-native/navigation';
@@ -78,34 +85,56 @@ export default function ProvisionScreen() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    // Create a temporary BleManager just to check state, then destroy it
-    // so it doesn't conflict with the library's internal BleManager.
-    const manager = new BleManager();
-    let destroyed = false;
+    let cancelled = false;
 
-    const subscription = manager.onStateChange((state) => {
-      setBleState(state);
-
-      // Once we have a definitive state, destroy the temp manager and wait
-      // for the async destroy to fully complete before allowing the navigator
-      // to mount.  BleManager is a singleton — if destroy() hasn't finished
-      // setting sharedInstance = null, the library's new BleManager() call
-      // returns the old zombie instance whose native client was destroyed.
-      if (state !== State.Unknown && state !== State.Resetting) {
-        subscription.remove();
-        if (!destroyed) {
-          destroyed = true;
-          manager.destroy().then(() => setChecking(false));
-        }
+    async function init() {
+      // On Android 12+ (API 31), BLUETOOTH_SCAN and BLUETOOTH_CONNECT are
+      // runtime permissions. Request them before checking adapter state so
+      // that (a) the BleManager sees Authorized and (b) the permissions
+      // appear in the system Settings page if the user needs to grant later.
+      if (Platform.OS === 'android' && Platform.Version >= 31) {
+        await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        ]);
       }
-    }, true);
+
+      if (cancelled) return;
+
+      // Create a temporary BleManager just to check state, then destroy it
+      // so it doesn't conflict with the library's internal BleManager.
+      const manager = new BleManager();
+
+      const subscription = manager.onStateChange((state) => {
+        if (cancelled) return;
+        setBleState(state);
+
+        // Once we have a definitive state, destroy the temp manager and wait
+        // for the async destroy to fully complete before allowing the navigator
+        // to mount.  BleManager is a singleton — if destroy() hasn't finished
+        // setting sharedInstance = null, the library's new BleManager() call
+        // returns the old zombie instance whose native client was destroyed.
+        if (state !== State.Unknown && state !== State.Resetting) {
+          subscription.remove();
+          manager.destroy().then(() => {
+            if (!cancelled) setChecking(false);
+          });
+        }
+      }, true);
+
+      // Store cleanup for unmount
+      cleanupRef = () => {
+        subscription.remove();
+        manager.destroy();
+      };
+    }
+
+    let cleanupRef: (() => void) | null = null;
+    init();
 
     return () => {
-      subscription.remove();
-      if (!destroyed) {
-        destroyed = true;
-        manager.destroy();
-      }
+      cancelled = true;
+      cleanupRef?.();
     };
   }, []);
 
@@ -135,7 +164,7 @@ export default function ProvisionScreen() {
           // Explicitly pass the default BLE device name prefix.
           // To scan for custom devices, change to e.g. 'MyDevice-'
           // or pass an array for multiple prefixes: ['BrewPi32-', 'TiltBridge-']
-          config={{ ble: { deviceNamePrefix: 'ESP32-WiFi-' } }}
+          config={{ ble: { deviceNamePrefix: 'ESP32-WiFi-', scanTimeoutMs: 3000 } }}
           onComplete={(result) => {
             console.log('Provisioning complete:', result);
             goBack();
