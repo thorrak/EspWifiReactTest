@@ -132,6 +132,10 @@ export default function ProvisionScreen() {
     <View style={styles.container}>
       <ProvisioningErrorBoundary onDismiss={goBack}>
         <ProvisioningNavigator
+          // Explicitly pass the default BLE device name prefix.
+          // To scan for custom devices, change to e.g. 'MyDevice-'
+          // or pass an array for multiple prefixes: ['BrewPi32-', 'TiltBridge-']
+          config={{ ble: { deviceNamePrefix: 'ESP32-WiFi-' } }}
           onComplete={(result) => {
             console.log('Provisioning complete:', result);
             goBack();
