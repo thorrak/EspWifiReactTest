@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { BleManager, State } from 'react-native-ble-plx';
-import { ProvisioningNavigator } from 'esp-wifi-manager-react-native/navigation';
+import { ProvisioningNavigator } from 'esp-wifi-config-react-native/navigation';
 
 const BLE_STATE_MESSAGES: Partial<Record<State, string>> = {
   [State.Unsupported]: 'This device does not support Bluetooth Low Energy.',

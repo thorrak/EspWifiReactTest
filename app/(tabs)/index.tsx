@@ -24,7 +24,7 @@ export default function HomeScreen() {
           ESP WiFi Provisioning
         </ThemedText>
         <ThemedText style={styles.subtitle}>
-          Test app for esp-wifi-manager-react-native
+          Test app for esp-wifi-config-react-native
         </ThemedText>
 
         <TouchableOpacity

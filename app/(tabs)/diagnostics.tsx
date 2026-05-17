@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { BleManager, Device, State, BleError } from 'react-native-ble-plx';
 
-// Hardcoded from esp-wifi-manager-react-native constants
+// Hardcoded from esp-wifi-config-react-native constants
 const SERVICE_UUID = '0000FFE0-0000-1000-8000-00805F9B34FB';
 const STATUS_CHAR_UUID = '0000FFE1-0000-1000-8000-00805F9B34FB';
 const COMMAND_CHAR_UUID = '0000FFE2-0000-1000-8000-00805F9B34FB';

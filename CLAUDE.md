@@ -1,6 +1,6 @@
-# ESP WiFi React Test 2
+# ESP WiFi React Test
 
-Example/test app for the `esp-wifi-manager-react-native` library.
+Example/test app for the [`esp-wifi-config-react-native`](https://github.com/thorrak/esp_wifi_config_react_native) library.
 
 ## Project Structure
 
@@ -10,41 +10,47 @@ Example/test app for the `esp-wifi-manager-react-native` library.
 │   ├── _layout.tsx        # Root layout — registers provision route as modal
 │   ├── provision.tsx      # Renders ProvisioningNavigator with BLE guard + error boundary
 │   └── (tabs)/
-│       ├── _layout.tsx    # Tab layout (Home only)
-│       └── index.tsx      # Home screen with "Start WiFi Provisioning" button
-├── metro.config.js        # Critical config for symlinked local library
+│       ├── _layout.tsx    # Home + Diagnostics tabs
+│       ├── index.tsx      # Home screen with "Start WiFi Provisioning" button
+│       └── diagnostics.tsx# Low-level BLE diagnostics that exercise GATT directly
+├── metro.config.js        # Enables package-exports for the `/navigation` subpath
 ├── app.json               # BLE permissions and plugin config
 └── package.json
 ```
 
 ## Key Architecture Decisions
 
-### Local Library Symlink
-The library is at `/Users/jbeeler/VSCodeProjects/esp_wifi_manager_react_native` and installed via `file:` reference (creates a symlink). This requires extensive Metro config — see `metro.config.js` comments for details. When the library is published to npm, most of this config goes away.
+### Library Install Source
+The library is installed from GitHub via `git+https://github.com/thorrak/esp_wifi_config_react_native.git` in `package.json`. npm runs the library's `prepare` script (`bob build`) on install to generate the compiled `lib/` output. Metro still resolves to the TypeScript source via the package's `react-native` field.
 
 ### Metro Config (metro.config.js)
-This is the most complex file in the project. It solves three problems:
-1. **`watchFolders`** — Metro must watch the symlinked library directory
-2. **`blockList`** — The library's own `node_modules/` must be blocked (except `zustand`) to prevent duplicate React/RN instances
-3. **`extraNodeModules`** — Maps all project packages as fallback resolution targets since the library source isn't a descendant of this project directory
-4. **`unstable_enablePackageExports`** — Required for the `/navigation` subpath import
+Minimal — just sets `resolver.unstable_enablePackageExports = true` so the `esp-wifi-config-react-native/navigation` subpath import resolves via the library's `package.json` "exports" field.
 
 ### BLE Manager Singleton Constraint
-`react-native-ble-plx` only allows one `BleManager` instance at a time. The provisioning screen (`provision.tsx`) creates a temporary one to check BLE state, then **destroys it with a 200ms delay** before `ProvisioningNavigator` renders (which creates its own internally via `BleTransport`). Never have two `BleManager` instances alive simultaneously.
+`react-native-ble-plx` only allows one `BleManager` instance at a time. The provisioning screen (`provision.tsx`) creates a temporary one to check BLE state, then awaits `manager.destroy()` before letting `ProvisioningNavigator` render (which creates its own internally via `BleTransport`). Never have two `BleManager` instances alive simultaneously.
 
 ### ProvisioningNavigator Import
-Currently uses subpath export: `esp-wifi-manager-react-native/navigation`. This requires `unstable_enablePackageExports` in Metro. If the library adds this to its main export, the import can change to `esp-wifi-manager-react-native` and that Metro setting becomes unnecessary.
+Uses subpath export: `esp-wifi-config-react-native/navigation`. This requires `unstable_enablePackageExports` in Metro. If the library re-exports `ProvisioningNavigator` from its main entry, the import can change to `esp-wifi-config-react-native` and that Metro setting becomes unnecessary.
 
 ## Build & Run
 
 ```bash
 npm install
 npx expo prebuild          # generates ios/ and android/
-npx expo run:ios           # simulator
 npx expo run:ios --device  # physical device
+npx expo run:android       # physical device (no BLE on emulator)
 ```
 
-**Must use dev builds** (`expo run:ios`), not Expo Go (`expo start`). Native BLE modules aren't in Expo Go.
+**Must use dev builds** (`expo run:ios` / `expo run:android`), not Expo Go (`expo start`). Native BLE modules aren't in Expo Go.
+
+### Android Build Requirements
+- **JDK 17 required** — Gradle 8.x does not support Java 25+. JDK 17 is installed via Homebrew at `/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home` but is not symlinked into `java_home`, so it won't be found automatically.
+- **`ANDROID_HOME` is not set** in shell profile. The SDK lives at `~/Library/Android/sdk`.
+- Before building Android, export both:
+  ```bash
+  export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.18/libexec/openjdk.jdk/Contents/Home
+  export ANDROID_HOME=~/Library/Android/sdk
+  ```
 
 ## Known Issues
 
