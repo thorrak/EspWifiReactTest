@@ -5,16 +5,24 @@ import {
   TouchableOpacity,
   View,
   Text,
+  TextInput,
   Platform,
 } from 'react-native';
-import { BleManager, Device, State, BleError } from 'react-native-ble-plx';
-
-// Hardcoded from esp-wifi-config-react-native constants
-const SERVICE_UUID = '0000FFE0-0000-1000-8000-00805F9B34FB';
-const STATUS_CHAR_UUID = '0000FFE1-0000-1000-8000-00805F9B34FB';
-const COMMAND_CHAR_UUID = '0000FFE2-0000-1000-8000-00805F9B34FB';
-const RESPONSE_CHAR_UUID = '0000FFE3-0000-1000-8000-00805F9B34FB';
-const DEVICE_NAME_PREFIX = 'ESP32-WiFi-';
+import {
+  BleTransport,
+  DeviceProtocol,
+  DEVICE_NAME_PREFIX,
+  DEFAULT_POP,
+  requestBluetoothPermissions,
+  type DiscoveredDevice,
+  type ConnectedDeviceInfo,
+  type DeviceVersionInfo,
+  type DeviceCapabilities,
+  type DeviceNetworkPolicy,
+  type DeviceNetworkInfo,
+  type DeviceVariable,
+  type ScannedNetwork,
+} from 'esp-wifi-config-react-native';
 
 type StepStatus = 'pending' | 'running' | 'pass' | 'fail';
 
@@ -23,15 +31,11 @@ interface LogEntry {
   message: string;
 }
 
-interface DiscoveredDevice {
-  id: string;
-  name: string | null;
-  rssi: number | null;
-  serviceUUIDs: string[] | null;
-}
-
 function timestamp(): string {
-  return new Date().toLocaleTimeString('en-US', { hour12: false, fractionalSecondDigits: 3 });
+  return new Date().toLocaleTimeString('en-US', {
+    hour12: false,
+    fractionalSecondDigits: 3,
+  });
 }
 
 function StatusBadge({ status }: { status: StepStatus }) {
@@ -63,45 +67,63 @@ function LogView({ logs }: { logs: LogEntry[] }) {
 }
 
 export default function DiagnosticsScreen() {
-  const bleManagerRef = useRef<BleManager | null>(null);
-  const connectedDeviceRef = useRef<Device | null>(null);
-  const scanSubscriptionRef = useRef<{ remove: () => void } | null>(null);
+  const transportRef = useRef<BleTransport | null>(null);
+  const protocolRef = useRef<DeviceProtocol | null>(null);
 
   // Step statuses
-  const [createStatus, setCreateStatus] = useState<StepStatus>('pending');
-  const [stateStatus, setStateStatus] = useState<StepStatus>('pending');
+  const [permStatus, setPermStatus] = useState<StepStatus>('pending');
   const [scanStatus, setScanStatus] = useState<StepStatus>('pending');
-  const [filteredScanStatus, setFilteredScanStatus] = useState<StepStatus>('pending');
+  const [customScanStatus, setCustomScanStatus] = useState<StepStatus>('pending');
   const [connectStatus, setConnectStatus] = useState<StepStatus>('pending');
-  const [discoverStatus, setDiscoverStatus] = useState<StepStatus>('pending');
-  const [validateStatus, setValidateStatus] = useState<StepStatus>('pending');
+  const [versionStatus, setVersionStatus] = useState<StepStatus>('pending');
+  const [capsStatus, setCapsStatus] = useState<StepStatus>('pending');
+  const [policyStatus, setPolicyStatus] = useState<StepStatus>('pending');
+  const [varsStatus, setVarsStatus] = useState<StepStatus>('pending');
+  const [wifiScanStatus, setWifiScanStatus] = useState<StepStatus>('pending');
+  const [netInfoStatus, setNetInfoStatus] = useState<StepStatus>('pending');
 
   // Step logs
-  const [createLogs, setCreateLogs] = useState<LogEntry[]>([]);
-  const [stateLogs, setStateLogs] = useState<LogEntry[]>([]);
+  const [permLogs, setPermLogs] = useState<LogEntry[]>([]);
   const [scanLogs, setScanLogs] = useState<LogEntry[]>([]);
-  const [filteredScanLogs, setFilteredScanLogs] = useState<LogEntry[]>([]);
+  const [customScanLogs, setCustomScanLogs] = useState<LogEntry[]>([]);
   const [connectLogs, setConnectLogs] = useState<LogEntry[]>([]);
-  const [discoverLogs, setDiscoverLogs] = useState<LogEntry[]>([]);
-  const [validateLogs, setValidateLogs] = useState<LogEntry[]>([]);
+  const [versionLogs, setVersionLogs] = useState<LogEntry[]>([]);
+  const [capsLogs, setCapsLogs] = useState<LogEntry[]>([]);
+  const [policyLogs, setPolicyLogs] = useState<LogEntry[]>([]);
+  const [varsLogs, setVarsLogs] = useState<LogEntry[]>([]);
+  const [wifiScanLogs, setWifiScanLogs] = useState<LogEntry[]>([]);
+  const [netInfoLogs, setNetInfoLogs] = useState<LogEntry[]>([]);
 
-  // Discovered devices
-  const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
-  const [filteredDevices, setFilteredDevices] = useState<DiscoveredDevice[]>([]);
+  // Data
+  const [scannedDevices, setScannedDevices] = useState<DiscoveredDevice[]>([]);
+  const [customScannedDevices, setCustomScannedDevices] = useState<DiscoveredDevice[]>([]);
+  const [connectedInfo, setConnectedInfo] = useState<ConnectedDeviceInfo | null>(null);
+  const [versionInfo, setVersionInfo] = useState<DeviceVersionInfo | null>(null);
+  const [capsInfo, setCapsInfo] = useState<DeviceCapabilities | null>(null);
+  const [policyInfo, setPolicyInfo] = useState<DeviceNetworkPolicy | null>(null);
+  const [varsInfo, setVarsInfo] = useState<DeviceVariable[] | null>(null);
+  const [wifiNetworks, setWifiNetworks] = useState<ScannedNetwork[] | null>(null);
+  const [netInfo, setNetInfo] = useState<DeviceNetworkInfo | null>(null);
 
-  // BLE state
-  const [bleState, setBleState] = useState<string>('Unknown');
+  // User-editable inputs
+  const [customPrefix, setCustomPrefix] = useState<string>('');
+  const [pop, setPop] = useState<string>(DEFAULT_POP);
 
-  // Expanded sections
+  // Section expansion
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    create: true,
-    state: true,
+    perm: true,
     scan: true,
-    filteredScan: true,
+    customScan: false,
     connect: true,
-    discover: true,
-    validate: true,
+    version: false,
+    caps: false,
+    policy: false,
+    vars: false,
+    wifiScan: false,
+    netInfo: false,
   });
+  const toggleSection = (key: string) =>
+    setExpanded((e) => ({ ...e, [key]: !e[key] }));
 
   const addLog = useCallback(
     (setter: React.Dispatch<React.SetStateAction<LogEntry[]>>, message: string) => {
@@ -110,360 +132,306 @@ export default function DiagnosticsScreen() {
     []
   );
 
-  const toggleSection = (key: string) => {
-    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      scanSubscriptionRef.current?.remove();
-      if (connectedDeviceRef.current) {
-        connectedDeviceRef.current.cancelConnection().catch(() => {});
-      }
-      if (bleManagerRef.current) {
-        bleManagerRef.current.destroy();
-      }
+      protocolRef.current?.destroy();
+      transportRef.current?.destroy();
+      protocolRef.current = null;
+      transportRef.current = null;
     };
   }, []);
 
-  // Step 1: Create BleManager
-  const runCreateManager = useCallback(() => {
-    if (bleManagerRef.current) {
-      addLog(setCreateLogs, 'BleManager already exists, destroying first...');
-      bleManagerRef.current.destroy();
-      bleManagerRef.current = null;
-    }
-
-    setCreateStatus('running');
-    setCreateLogs([]);
-    addLog(setCreateLogs, 'Creating new BleManager()...');
-
+  // ──────────────────────────────────────────────────────────────────────
+  // Step 1 — Permissions
+  // ──────────────────────────────────────────────────────────────────────
+  const runPermissions = async () => {
+    setPermStatus('running');
+    setPermLogs([]);
+    addLog(setPermLogs, 'Calling requestBluetoothPermissions()...');
     try {
-      const manager = new BleManager();
-      bleManagerRef.current = manager;
-      addLog(setCreateLogs, 'BleManager created successfully');
-      setCreateStatus('pass');
-    } catch (error: any) {
-      addLog(setCreateLogs, `FAILED: ${error.message}`);
-      setCreateStatus('fail');
+      const result = await requestBluetoothPermissions();
+      addLog(setPermLogs, `granted=${result.granted}`);
+      if (!result.granted) addLog(setPermLogs, `reason: ${result.reason}`);
+      setPermStatus(result.granted ? 'pass' : 'fail');
+    } catch (e: unknown) {
+      const err = e as Error;
+      addLog(setPermLogs, `EXCEPTION: ${err.message}`);
+      setPermStatus('fail');
     }
-  }, [addLog]);
+  };
 
-  // Step 2: Check BLE State
-  const runCheckState = useCallback(() => {
-    const manager = bleManagerRef.current;
-    if (!manager) {
-      addLog(setStateLogs, 'ERROR: No BleManager — run Step 1 first');
-      setStateStatus('fail');
-      return;
+  // ──────────────────────────────────────────────────────────────────────
+  // Transport helpers
+  // ──────────────────────────────────────────────────────────────────────
+  const buildTransport = (
+    setter: React.Dispatch<React.SetStateAction<LogEntry[]>>,
+    prefix: string | undefined
+  ): BleTransport => {
+    // Tear down any previous transport before creating a new one — each
+    // diagnostic scan uses its own prefix config.
+    protocolRef.current?.destroy();
+    protocolRef.current = null;
+    if (transportRef.current) {
+      transportRef.current.destroy();
+      transportRef.current = null;
     }
-
-    setStateStatus('running');
-    setStateLogs([]);
-    addLog(setStateLogs, 'Checking BLE adapter state...');
-
-    manager.state().then((state) => {
-      setBleState(state);
-      addLog(setStateLogs, `Current state: ${state}`);
-
-      if (state === State.PoweredOn) {
-        setStateStatus('pass');
-      } else {
-        addLog(setStateLogs, `Waiting for state change (currently ${state})...`);
-        const sub = manager.onStateChange((newState) => {
-          setBleState(newState);
-          addLog(setStateLogs, `State changed to: ${newState}`);
-          if (newState === State.PoweredOn) {
-            setStateStatus('pass');
-            sub.remove();
-          }
-        }, true);
-
-        // Timeout after 10s
-        setTimeout(() => {
-          if (stateStatus === 'running') {
-            addLog(setStateLogs, 'Timed out waiting for PoweredOn');
-            setStateStatus('fail');
-            sub.remove();
-          }
-        }, 10000);
-      }
+    const transport = new BleTransport({
+      deviceNamePrefix: prefix && prefix.length > 0 ? prefix : undefined,
+      scanTimeoutMs: 10000,
+      security: 1,
+      proofOfPossession: pop,
     });
-  }, [addLog, stateStatus]);
+    transport.on('error', (err) => {
+      addLog(setter, `ERROR EVENT: ${err.message}`);
+    });
+    transportRef.current = transport;
+    return transport;
+  };
 
-  // Step 3: Unfiltered Scan
-  const runUnfilteredScan = useCallback(() => {
-    const manager = bleManagerRef.current;
-    if (!manager) {
-      addLog(setScanLogs, 'ERROR: No BleManager — run Step 1 first');
-      setScanStatus('fail');
-      return;
-    }
-
-    setScanStatus('running');
-    setScanLogs([]);
+  const runScanWith = async (
+    prefix: string | undefined,
+    setStatus: React.Dispatch<React.SetStateAction<StepStatus>>,
+    setLogs: React.Dispatch<React.SetStateAction<LogEntry[]>>,
+    setDevices: React.Dispatch<React.SetStateAction<DiscoveredDevice[]>>
+  ) => {
+    setStatus('running');
+    setLogs([]);
     setDevices([]);
-    addLog(setScanLogs, 'Starting unfiltered scan for 10 seconds...');
-
-    const seen = new Map<string, DiscoveredDevice>();
-
-    manager.startDeviceScan(null, null, (error: BleError | null, device: Device | null) => {
-      if (error) {
-        addLog(setScanLogs, `Scan error: [${error.errorCode}] ${error.message}`);
-        setScanStatus('fail');
-        return;
+    addLog(setLogs, `Scanning with prefix "${prefix ?? DEVICE_NAME_PREFIX}" (10s)...`);
+    try {
+      const transport = buildTransport(setLogs, prefix);
+      const discovered: DiscoveredDevice[] = [];
+      const off1 = transport.on('deviceDiscovered', (d) => {
+        discovered.push(d);
+        setDevices([...discovered]);
+        addLog(setLogs, `discovered: ${d.name} (${d.id}) rssi=${d.rssi ?? 'n/a'}`);
+      });
+      const off2 = transport.on('scanCompleted', (info) => {
+        addLog(setLogs, `completed: matched=${info.matched} total=${info.total}`);
+      });
+      await transport.startScan();
+      off1();
+      off2();
+      if (discovered.length === 0) {
+        addLog(setLogs, 'No matching devices found.');
+        setStatus('fail');
+      } else {
+        addLog(setLogs, `Done. ${discovered.length} device(s).`);
+        setStatus('pass');
       }
-
-      if (device && !seen.has(device.id)) {
-        const entry: DiscoveredDevice = {
-          id: device.id,
-          name: device.name ?? device.localName ?? null,
-          rssi: device.rssi,
-          serviceUUIDs: device.serviceUUIDs,
-        };
-        seen.set(device.id, entry);
-        setDevices(Array.from(seen.values()));
-
-        const nameStr = entry.name ?? '(unnamed)';
-        const isEsp = entry.name?.startsWith(DEVICE_NAME_PREFIX);
-        addLog(
-          setScanLogs,
-          `Found: ${nameStr} | ${device.id} | RSSI: ${entry.rssi}${isEsp ? ' *** ESP32 ***' : ''}`
-        );
-      }
-    });
-
-    setTimeout(() => {
-      manager.stopDeviceScan();
-      addLog(setScanLogs, `Scan complete. Found ${seen.size} device(s).`);
-      const espCount = Array.from(seen.values()).filter((d) =>
-        d.name?.startsWith(DEVICE_NAME_PREFIX)
-      ).length;
-      addLog(setScanLogs, `ESP32 devices (name starts with "${DEVICE_NAME_PREFIX}"): ${espCount}`);
-      setScanStatus(seen.size > 0 ? 'pass' : 'fail');
-    }, 10000);
-  }, [addLog]);
-
-  // Step 4: UUID-Filtered Scan
-  const runFilteredScan = useCallback(() => {
-    const manager = bleManagerRef.current;
-    if (!manager) {
-      addLog(setFilteredScanLogs, 'ERROR: No BleManager — run Step 1 first');
-      setFilteredScanStatus('fail');
-      return;
+    } catch (e: unknown) {
+      const err = e as Error;
+      addLog(setLogs, `EXCEPTION: ${err.message}`);
+      setStatus('fail');
     }
+  };
 
-    setFilteredScanStatus('running');
-    setFilteredScanLogs([]);
-    setFilteredDevices([]);
-    addLog(setFilteredScanLogs, `Starting scan with UUID filter [${SERVICE_UUID}] for 10 seconds...`);
-
-    const seen = new Map<string, DiscoveredDevice>();
-
-    manager.startDeviceScan(
-      [SERVICE_UUID],
-      null,
-      (error: BleError | null, device: Device | null) => {
-        if (error) {
-          addLog(setFilteredScanLogs, `Scan error: [${error.errorCode}] ${error.message}`);
-          setFilteredScanStatus('fail');
-          return;
-        }
-
-        if (device && !seen.has(device.id)) {
-          const entry: DiscoveredDevice = {
-            id: device.id,
-            name: device.name ?? device.localName ?? null,
-            rssi: device.rssi,
-            serviceUUIDs: device.serviceUUIDs,
-          };
-          seen.set(device.id, entry);
-          setFilteredDevices(Array.from(seen.values()));
-          addLog(
-            setFilteredScanLogs,
-            `Found: ${entry.name ?? '(unnamed)'} | ${device.id} | RSSI: ${entry.rssi}`
-          );
-        }
-      }
+  const runDefaultScan = () =>
+    runScanWith(undefined, setScanStatus, setScanLogs, setScannedDevices);
+  const runCustomScan = () =>
+    runScanWith(
+      customPrefix,
+      setCustomScanStatus,
+      setCustomScanLogs,
+      setCustomScannedDevices
     );
 
-    setTimeout(() => {
-      manager.stopDeviceScan();
-      addLog(setFilteredScanLogs, `Filtered scan complete. Found ${seen.size} device(s).`);
-      setFilteredScanStatus(seen.size > 0 ? 'pass' : 'fail');
-    }, 10000);
-  }, [addLog]);
+  // ──────────────────────────────────────────────────────────────────────
+  // Step 4 — Connect
+  // ──────────────────────────────────────────────────────────────────────
+  const runConnect = async (device: DiscoveredDevice) => {
+    setConnectStatus('running');
+    setConnectLogs([]);
+    setConnectedInfo(null);
+    // Reset all downstream steps
+    setVersionStatus('pending');
+    setVersionLogs([]);
+    setVersionInfo(null);
+    setCapsStatus('pending');
+    setCapsLogs([]);
+    setCapsInfo(null);
+    setPolicyStatus('pending');
+    setPolicyLogs([]);
+    setPolicyInfo(null);
+    setVarsStatus('pending');
+    setVarsLogs([]);
+    setVarsInfo(null);
+    setWifiScanStatus('pending');
+    setWifiScanLogs([]);
+    setWifiNetworks(null);
 
-  // Step 5: Connect to device
-  const runConnect = useCallback(
-    async (device: DiscoveredDevice) => {
-      const manager = bleManagerRef.current;
-      if (!manager) {
-        addLog(setConnectLogs, 'ERROR: No BleManager');
+    addLog(setConnectLogs, `Connecting to ${device.name} (${device.id}) with PoP "${pop}"...`);
+    try {
+      const transport = transportRef.current;
+      if (!transport) {
+        addLog(setConnectLogs, 'No transport — run a scan first.');
         setConnectStatus('fail');
         return;
       }
-
-      setConnectStatus('running');
-      setConnectLogs([]);
-      addLog(setConnectLogs, `Connecting to ${device.name ?? device.id}...`);
-
-      try {
-        const connected = await manager.connectToDevice(device.id, {
-          requestMTU: 517,
-          timeout: 10000,
-        });
-        connectedDeviceRef.current = connected;
-
-        const mtu = connected.mtu;
-        addLog(setConnectLogs, `Connected! MTU: ${mtu}`);
-        addLog(setConnectLogs, `Device ID: ${connected.id}`);
-        addLog(setConnectLogs, `Device name: ${connected.name ?? '(null)'}`);
-        setConnectStatus('pass');
-      } catch (error: any) {
-        addLog(setConnectLogs, `Connection FAILED: ${error.message}`);
-        if (error.errorCode) {
-          addLog(setConnectLogs, `Error code: ${error.errorCode}`);
-        }
-        setConnectStatus('fail');
-      }
-    },
-    [addLog]
-  );
-
-  // Step 6: Discover Services
-  const runDiscoverServices = useCallback(async () => {
-    const device = connectedDeviceRef.current;
-    if (!device) {
-      addLog(setDiscoverLogs, 'ERROR: No connected device — run Step 5 first');
-      setDiscoverStatus('fail');
-      return;
+      const info = await transport.connect(device.id, { pop });
+      addLog(setConnectLogs, `Connected. mtu=${info.mtu ?? 'n/a'}`);
+      setConnectedInfo(info);
+      protocolRef.current = new DeviceProtocol(transport);
+      setConnectStatus('pass');
+    } catch (e: unknown) {
+      const err = e as Error;
+      addLog(setConnectLogs, `EXCEPTION: ${err.message}`);
+      setConnectStatus('fail');
     }
+  };
 
-    setDiscoverStatus('running');
-    setDiscoverLogs([]);
-    addLog(setDiscoverLogs, 'Discovering all services and characteristics...');
-
-    try {
-      const discovered = await device.discoverAllServicesAndCharacteristics();
-      const services = await discovered.services();
-
-      addLog(setDiscoverLogs, `Found ${services.length} service(s):`);
-
-      for (const service of services) {
-        addLog(setDiscoverLogs, `\n  Service: ${service.uuid}`);
-        const chars = await service.characteristics();
-        for (const char of chars) {
-          const props = [];
-          if (char.isReadable) props.push('Read');
-          if (char.isWritableWithResponse) props.push('Write');
-          if (char.isWritableWithoutResponse) props.push('WriteNoResp');
-          if (char.isNotifiable) props.push('Notify');
-          if (char.isIndicatable) props.push('Indicate');
-          addLog(setDiscoverLogs, `    Char: ${char.uuid} [${props.join(', ')}]`);
-        }
-      }
-
-      setDiscoverStatus('pass');
-    } catch (error: any) {
-      addLog(setDiscoverLogs, `Discovery FAILED: ${error.message}`);
-      setDiscoverStatus('fail');
-    }
-  }, [addLog]);
-
-  // Step 7: Validate expected characteristics
-  const runValidateChars = useCallback(async () => {
-    const device = connectedDeviceRef.current;
-    if (!device) {
-      addLog(setValidateLogs, 'ERROR: No connected device');
-      setValidateStatus('fail');
-      return;
-    }
-
-    setValidateStatus('running');
-    setValidateLogs([]);
-    addLog(setValidateLogs, `Looking for service ${SERVICE_UUID}...`);
-
-    try {
-      const services = await device.services();
-      const targetService = services.find(
-        (s) => s.uuid.toUpperCase() === SERVICE_UUID.toUpperCase()
-      );
-
-      if (!targetService) {
-        addLog(setValidateLogs, `Service ${SERVICE_UUID} NOT FOUND`);
-        addLog(setValidateLogs, `Available services: ${services.map((s) => s.uuid).join(', ')}`);
-        setValidateStatus('fail');
-        return;
-      }
-
-      addLog(setValidateLogs, 'Service found! Checking characteristics...');
-      const chars = await targetService.characteristics();
-      const charUUIDs = chars.map((c) => c.uuid.toUpperCase());
-
-      const expected = [
-        { uuid: STATUS_CHAR_UUID, name: 'Status (FFE1)' },
-        { uuid: COMMAND_CHAR_UUID, name: 'Command (FFE2)' },
-        { uuid: RESPONSE_CHAR_UUID, name: 'Response (FFE3)' },
-      ];
-
-      let allFound = true;
-      for (const exp of expected) {
-        const found = charUUIDs.includes(exp.uuid.toUpperCase());
-        addLog(setValidateLogs, `  ${found ? 'FOUND' : 'MISSING'}: ${exp.name} (${exp.uuid})`);
-        if (!found) allFound = false;
-      }
-
-      // Show any extra characteristics
-      const expectedUUIDs = expected.map((e) => e.uuid.toUpperCase());
-      const extras = chars.filter((c) => !expectedUUIDs.includes(c.uuid.toUpperCase()));
-      if (extras.length > 0) {
-        addLog(setValidateLogs, `\nExtra characteristics on this service:`);
-        for (const c of extras) {
-          addLog(setValidateLogs, `  ${c.uuid}`);
-        }
-      }
-
-      setValidateStatus(allFound ? 'pass' : 'fail');
-    } catch (error: any) {
-      addLog(setValidateLogs, `Validation FAILED: ${error.message}`);
-      setValidateStatus('fail');
-    }
-  }, [addLog]);
-
-  // Auto-run steps 1-2 on mount
-  useEffect(() => {
-    runCreateManager();
-    // Small delay to let BleManager initialize before checking state
-    const timer = setTimeout(() => runCheckState(), 500);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const renderDeviceList = (
-    deviceList: DiscoveredDevice[],
-    onTap?: (device: DiscoveredDevice) => void
+  // ──────────────────────────────────────────────────────────────────────
+  // Generic protocomm step runner
+  // ──────────────────────────────────────────────────────────────────────
+  const runProtocolStep = async <T,>(
+    label: string,
+    op: (p: DeviceProtocol) => Promise<T>,
+    setStatus: React.Dispatch<React.SetStateAction<StepStatus>>,
+    setLogs: React.Dispatch<React.SetStateAction<LogEntry[]>>,
+    setData: (v: T) => void,
+    summarize: (v: T) => string
   ) => {
-    if (deviceList.length === 0) return null;
+    setStatus('running');
+    setLogs([]);
+    addLog(setLogs, `${label}...`);
+    try {
+      const protocol = protocolRef.current;
+      if (!protocol) {
+        addLog(setLogs, 'Not connected — connect to a device first.');
+        setStatus('fail');
+        return;
+      }
+      const result = await op(protocol);
+      setData(result);
+      addLog(setLogs, summarize(result));
+      setStatus('pass');
+    } catch (e: unknown) {
+      const err = e as Error;
+      addLog(setLogs, `EXCEPTION: ${err.message}`);
+      setStatus('fail');
+    }
+  };
+
+  const runVersion = () =>
+    runProtocolStep(
+      'getVersion()',
+      (p) => p.getVersion(),
+      setVersionStatus,
+      setVersionLogs,
+      setVersionInfo,
+      (v) =>
+        `OK. ${Object.entries(v)
+          .filter(([, val]) => val != null)
+          .map(([k, val]) => `${k}=${val}`)
+          .join(', ')}`
+    );
+
+  const runCapabilities = () =>
+    runProtocolStep(
+      'getCapabilities()',
+      (p) => p.getCapabilities(),
+      setCapsStatus,
+      setCapsLogs,
+      setCapsInfo,
+      (c) =>
+        `OK. capabilities=[${c.capabilities.join(', ')}] max_networks=${c.max_networks ?? '?'} max_vars=${c.max_vars ?? '?'}`
+    );
+
+  const runNetworkPolicy = () =>
+    runProtocolStep(
+      'getNetworkPolicy()',
+      (p) => p.getNetworkPolicy(),
+      setPolicyStatus,
+      setPolicyLogs,
+      setPolicyInfo,
+      (p) =>
+        `OK. ${Object.entries(p)
+          .filter(([, val]) => val != null)
+          .map(([k, val]) => `${k}=${val}`)
+          .join(', ')}`
+    );
+
+  const runListVars = () =>
+    runProtocolStep(
+      'listVars()',
+      (p) => p.listVars(),
+      setVarsStatus,
+      setVarsLogs,
+      setVarsInfo,
+      (vars) =>
+        vars.length === 0
+          ? 'OK. No variables set.'
+          : `OK. ${vars.length} variable(s): ${vars.map((v) => v.key).join(', ')}`
+    );
+
+  const runNetworkInfo = () =>
+    runProtocolStep(
+      'getNetworkInfo()',
+      (p) => p.getNetworkInfo(),
+      setNetInfoStatus,
+      setNetInfoLogs,
+      setNetInfo,
+      (info) =>
+        info.connected
+          ? `OK. connected ip=${info.ip ?? '?'} rssi=${info.rssi ?? '?'} dBm`
+          : 'OK. Not connected yet (no IP). Expected before provisioning; call after a join.'
+    );
+
+  const runWifiScan = () =>
+    runProtocolStep(
+      'scanWifi()',
+      (p) => p.scanWifi(),
+      setWifiScanStatus,
+      setWifiScanLogs,
+      setWifiNetworks,
+      (networks) =>
+        networks.length === 0
+          ? 'OK. No WiFi networks found.'
+          : `OK. ${networks.length} network(s). First 5: ${networks
+              .slice(0, 5)
+              .map((n) => `${n.ssid}(${n.rssi})`)
+              .join(', ')}`
+    );
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Disconnect
+  // ──────────────────────────────────────────────────────────────────────
+  const runDisconnect = async () => {
+    try {
+      await transportRef.current?.disconnect();
+      addLog(setConnectLogs, 'Disconnected.');
+    } catch (e: unknown) {
+      const err = e as Error;
+      addLog(setConnectLogs, `Disconnect error: ${err.message}`);
+    }
+    protocolRef.current?.destroy();
+    protocolRef.current = null;
+    setConnectedInfo(null);
+    setConnectStatus('pending');
+  };
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Render
+  // ──────────────────────────────────────────────────────────────────────
+  const renderDeviceList = (
+    list: DiscoveredDevice[],
+    onTap?: (d: DiscoveredDevice) => void
+  ) => {
+    if (list.length === 0) return null;
     return (
       <View style={styles.deviceList}>
-        {deviceList.map((d) => (
+        {list.map((d) => (
           <TouchableOpacity
             key={d.id}
-            style={[styles.deviceItem, d.name?.startsWith(DEVICE_NAME_PREFIX) && styles.espDevice]}
+            style={styles.deviceItem}
             onPress={() => onTap?.(d)}
             disabled={!onTap}
           >
-            <Text style={styles.deviceName}>{d.name ?? '(unnamed)'}</Text>
+            <Text style={styles.deviceName}>{d.name || '(unnamed)'}</Text>
             <Text style={styles.deviceDetail}>
               {d.id} | RSSI: {d.rssi ?? 'N/A'}
             </Text>
-            {d.serviceUUIDs && d.serviceUUIDs.length > 0 && (
-              <Text style={styles.deviceDetail}>
-                Services: {d.serviceUUIDs.join(', ')}
-              </Text>
-            )}
           </TouchableOpacity>
         ))}
       </View>
@@ -472,165 +440,283 @@ export default function DiagnosticsScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-      <Text style={styles.title}>BLE Diagnostics</Text>
+      <Text style={styles.title}>v2 Diagnostics</Text>
       <Text style={styles.subtitle}>
-        Tests BLE operations directly via react-native-ble-plx
+        Exercises BleTransport / DeviceProtocol against esp_wifi_config 0.2.0+
       </Text>
 
-      {/* Step 1: Create BleManager */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('create')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>1. Create BleManager</Text>
-          <StatusBadge status={createStatus} />
-        </View>
-        {expanded.create && (
+      {/* Step 1: Permissions */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('perm')}>
+          <Text style={styles.stepLabel}>1. Bluetooth Permissions</Text>
+          <StatusBadge status={permStatus} />
+        </TouchableOpacity>
+        {expanded.perm && (
           <View style={styles.cardBody}>
-            <TouchableOpacity style={styles.actionButton} onPress={runCreateManager}>
-              <Text style={styles.actionButtonText}>Create / Recreate</Text>
+            <TouchableOpacity style={styles.actionButton} onPress={runPermissions}>
+              <Text style={styles.actionButtonText}>Request Permissions</Text>
             </TouchableOpacity>
-            <LogView logs={createLogs} />
+            <LogView logs={permLogs} />
           </View>
         )}
-      </TouchableOpacity>
+      </View>
 
-      {/* Step 2: Check BLE State */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('state')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>2. BLE Adapter State</Text>
-          <StatusBadge status={stateStatus} />
-        </View>
-        {expanded.state && (
-          <View style={styles.cardBody}>
-            <Text style={styles.stateText}>Current: {bleState}</Text>
-            <TouchableOpacity style={styles.actionButton} onPress={runCheckState}>
-              <Text style={styles.actionButtonText}>Re-check State</Text>
-            </TouchableOpacity>
-            <LogView logs={stateLogs} />
-          </View>
-        )}
-      </TouchableOpacity>
-
-      {/* Step 3: Unfiltered Scan */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('scan')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>3. Scan (No Filter)</Text>
+      {/* Step 2: Default scan */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('scan')}>
+          <Text style={styles.stepLabel}>2. Scan (default `{DEVICE_NAME_PREFIX}`)</Text>
           <StatusBadge status={scanStatus} />
-        </View>
+        </TouchableOpacity>
         {expanded.scan && (
           <View style={styles.cardBody}>
-            <Text style={styles.hint}>Scans for ALL BLE devices for 10 seconds</Text>
+            <Text style={styles.hint}>
+              Scans for devices matching {DEVICE_NAME_PREFIX}* (10s).
+            </Text>
             <TouchableOpacity
               style={[styles.actionButton, scanStatus === 'running' && styles.disabledButton]}
-              onPress={runUnfilteredScan}
+              onPress={runDefaultScan}
               disabled={scanStatus === 'running'}
             >
               <Text style={styles.actionButtonText}>
-                {scanStatus === 'running' ? 'Scanning...' : 'Start Scan'}
+                {scanStatus === 'running' ? 'Scanning…' : 'Start Scan'}
               </Text>
             </TouchableOpacity>
-            {renderDeviceList(devices, runConnect)}
+            {renderDeviceList(scannedDevices, runConnect)}
             <LogView logs={scanLogs} />
           </View>
         )}
-      </TouchableOpacity>
+      </View>
 
-      {/* Step 4: UUID-Filtered Scan */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('filteredScan')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>4. Scan (UUID Filter)</Text>
-          <StatusBadge status={filteredScanStatus} />
-        </View>
-        {expanded.filteredScan && (
+      {/* Step 3: Custom prefix scan */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('customScan')}>
+          <Text style={styles.stepLabel}>3. Scan (custom prefix)</Text>
+          <StatusBadge status={customScanStatus} />
+        </TouchableOpacity>
+        {expanded.customScan && (
           <View style={styles.cardBody}>
-            <Text style={styles.hint}>Scans for service {SERVICE_UUID} for 10 seconds</Text>
+            <Text style={styles.hint}>
+              Filter by your own name prefix. Leave blank to use the library default.
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={customPrefix}
+              onChangeText={setCustomPrefix}
+              placeholder={DEVICE_NAME_PREFIX}
+              placeholderTextColor="#48484A"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
             <TouchableOpacity
-              style={[
-                styles.actionButton,
-                filteredScanStatus === 'running' && styles.disabledButton,
-              ]}
-              onPress={runFilteredScan}
-              disabled={filteredScanStatus === 'running'}
+              style={[styles.actionButton, customScanStatus === 'running' && styles.disabledButton]}
+              onPress={runCustomScan}
+              disabled={customScanStatus === 'running'}
             >
               <Text style={styles.actionButtonText}>
-                {filteredScanStatus === 'running' ? 'Scanning...' : 'Start Filtered Scan'}
+                {customScanStatus === 'running' ? 'Scanning…' : 'Start Scan'}
               </Text>
             </TouchableOpacity>
-            {renderDeviceList(filteredDevices, runConnect)}
-            <LogView logs={filteredScanLogs} />
+            {renderDeviceList(customScannedDevices, runConnect)}
+            <LogView logs={customScanLogs} />
           </View>
         )}
-      </TouchableOpacity>
+      </View>
 
-      {/* Step 5: Connect */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('connect')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>5. Connect</Text>
+      {/* Step 4: Connect */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('connect')}>
+          <Text style={styles.stepLabel}>4. Connect (protocomm session)</Text>
           <StatusBadge status={connectStatus} />
-        </View>
+        </TouchableOpacity>
         {expanded.connect && (
           <View style={styles.cardBody}>
-            <Text style={styles.hint}>Tap a device from scan results above to connect</Text>
+            <Text style={styles.hint}>Proof of Possession (Security 1):</Text>
+            <TextInput
+              style={styles.input}
+              value={pop}
+              onChangeText={setPop}
+              placeholder={DEFAULT_POP}
+              placeholderTextColor="#48484A"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry={false}
+            />
+            <Text style={styles.hint}>
+              Tap a device above to connect. Session-init negotiates PoP via the SDK.
+            </Text>
+            {connectedInfo && (
+              <Text style={styles.stateText}>
+                Connected: {connectedInfo.name} ({connectedInfo.id})
+              </Text>
+            )}
             <LogView logs={connectLogs} />
           </View>
         )}
-      </TouchableOpacity>
+      </View>
 
-      {/* Step 6: Discover Services */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('discover')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>6. Discover Services</Text>
-          <StatusBadge status={discoverStatus} />
-        </View>
-        {expanded.discover && (
+      {/* Step 5: getVersion */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('version')}>
+          <Text style={styles.stepLabel}>5. getVersion()</Text>
+          <StatusBadge status={versionStatus} />
+        </TouchableOpacity>
+        {expanded.version && (
           <View style={styles.cardBody}>
             <TouchableOpacity
               style={[styles.actionButton, connectStatus !== 'pass' && styles.disabledButton]}
-              onPress={runDiscoverServices}
+              onPress={runVersion}
               disabled={connectStatus !== 'pass'}
             >
-              <Text style={styles.actionButtonText}>Discover Services</Text>
+              <Text style={styles.actionButtonText}>Fetch Version</Text>
             </TouchableOpacity>
-            <LogView logs={discoverLogs} />
+            {versionInfo && (
+              <Text style={styles.kvBlock}>{JSON.stringify(versionInfo, null, 2)}</Text>
+            )}
+            <LogView logs={versionLogs} />
           </View>
         )}
-      </TouchableOpacity>
+      </View>
 
-      {/* Step 7: Validate Characteristics */}
-      <TouchableOpacity style={styles.card} onPress={() => toggleSection('validate')}>
-        <View style={styles.cardHeader}>
-          <Text style={styles.stepLabel}>7. Validate Characteristics</Text>
-          <StatusBadge status={validateStatus} />
-        </View>
-        {expanded.validate && (
+      {/* Step 6: getCapabilities */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('caps')}>
+          <Text style={styles.stepLabel}>6. getCapabilities()</Text>
+          <StatusBadge status={capsStatus} />
+        </TouchableOpacity>
+        {expanded.caps && (
           <View style={styles.cardBody}>
             <TouchableOpacity
-              style={[styles.actionButton, discoverStatus !== 'pass' && styles.disabledButton]}
-              onPress={runValidateChars}
-              disabled={discoverStatus !== 'pass'}
+              style={[styles.actionButton, connectStatus !== 'pass' && styles.disabledButton]}
+              onPress={runCapabilities}
+              disabled={connectStatus !== 'pass'}
             >
-              <Text style={styles.actionButtonText}>Validate</Text>
+              <Text style={styles.actionButtonText}>Fetch Capabilities</Text>
             </TouchableOpacity>
-            <LogView logs={validateLogs} />
+            {capsInfo && (
+              <Text style={styles.kvBlock}>{JSON.stringify(capsInfo, null, 2)}</Text>
+            )}
+            <LogView logs={capsLogs} />
           </View>
         )}
-      </TouchableOpacity>
+      </View>
 
-      {/* Disconnect button */}
+      {/* Step 7: getNetworkPolicy */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('policy')}>
+          <Text style={styles.stepLabel}>7. getNetworkPolicy()</Text>
+          <StatusBadge status={policyStatus} />
+        </TouchableOpacity>
+        {expanded.policy && (
+          <View style={styles.cardBody}>
+            <TouchableOpacity
+              style={[styles.actionButton, connectStatus !== 'pass' && styles.disabledButton]}
+              onPress={runNetworkPolicy}
+              disabled={connectStatus !== 'pass'}
+            >
+              <Text style={styles.actionButtonText}>Fetch Policy</Text>
+            </TouchableOpacity>
+            {policyInfo && (
+              <Text style={styles.kvBlock}>{JSON.stringify(policyInfo, null, 2)}</Text>
+            )}
+            <LogView logs={policyLogs} />
+          </View>
+        )}
+      </View>
+
+      {/* Step 8: listVars */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('vars')}>
+          <Text style={styles.stepLabel}>8. listVars()</Text>
+          <StatusBadge status={varsStatus} />
+        </TouchableOpacity>
+        {expanded.vars && (
+          <View style={styles.cardBody}>
+            <TouchableOpacity
+              style={[styles.actionButton, connectStatus !== 'pass' && styles.disabledButton]}
+              onPress={runListVars}
+              disabled={connectStatus !== 'pass'}
+            >
+              <Text style={styles.actionButtonText}>List Variables</Text>
+            </TouchableOpacity>
+            {varsInfo && varsInfo.length > 0 && (
+              <View style={styles.kvBlockContainer}>
+                {varsInfo.map((v) => (
+                  <Text key={v.key} style={styles.kvLine}>
+                    <Text style={styles.kvKey}>{v.key}</Text> = {v.value}
+                  </Text>
+                ))}
+              </View>
+            )}
+            <LogView logs={varsLogs} />
+          </View>
+        )}
+      </View>
+
+      {/* Step 9: scanWifi */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('wifiScan')}>
+          <Text style={styles.stepLabel}>9. scanWifi()</Text>
+          <StatusBadge status={wifiScanStatus} />
+        </TouchableOpacity>
+        {expanded.wifiScan && (
+          <View style={styles.cardBody}>
+            <TouchableOpacity
+              style={[styles.actionButton, connectStatus !== 'pass' && styles.disabledButton]}
+              onPress={runWifiScan}
+              disabled={connectStatus !== 'pass'}
+            >
+              <Text style={styles.actionButtonText}>Scan WiFi (via device)</Text>
+            </TouchableOpacity>
+            {wifiNetworks && wifiNetworks.length > 0 && (
+              <View style={styles.kvBlockContainer}>
+                {wifiNetworks.slice(0, 15).map((n, i) => (
+                  <Text key={`${n.ssid}-${i}`} style={styles.kvLine}>
+                    {n.ssid}{' '}
+                    <Text style={styles.kvKey}>
+                      ({n.rssi} dBm, {n.auth})
+                    </Text>
+                  </Text>
+                ))}
+              </View>
+            )}
+            <LogView logs={wifiScanLogs} />
+          </View>
+        )}
+      </View>
+
+      {/* Step 10: getNetworkInfo */}
+      <View style={styles.card}>
+        <TouchableOpacity style={styles.cardHeader} onPress={() => toggleSection('netInfo')}>
+          <Text style={styles.stepLabel}>10. getNetworkInfo()</Text>
+          <StatusBadge status={netInfoStatus} />
+        </TouchableOpacity>
+        {expanded.netInfo && (
+          <View style={styles.cardBody}>
+            <Text style={styles.hint}>
+              Returns the station&apos;s assigned IP once the device is on WiFi.
+              Before provisioning it reports {'{ connected: false }'}. Requires
+              firmware 0.2.0+.
+            </Text>
+            <TouchableOpacity
+              style={[styles.actionButton, connectStatus !== 'pass' && styles.disabledButton]}
+              onPress={runNetworkInfo}
+              disabled={connectStatus !== 'pass'}
+            >
+              <Text style={styles.actionButtonText}>Fetch Network Info</Text>
+            </TouchableOpacity>
+            {netInfo && (
+              <Text style={styles.kvBlock}>{JSON.stringify(netInfo, null, 2)}</Text>
+            )}
+            <LogView logs={netInfoLogs} />
+          </View>
+        )}
+      </View>
+
+      {/* Disconnect */}
       {connectStatus === 'pass' && (
         <TouchableOpacity
           style={[styles.actionButton, styles.disconnectButton]}
-          onPress={async () => {
-            try {
-              await connectedDeviceRef.current?.cancelConnection();
-              connectedDeviceRef.current = null;
-              setConnectStatus('pending');
-              setConnectLogs([]);
-              setDiscoverStatus('pending');
-              setDiscoverLogs([]);
-              setValidateStatus('pending');
-              setValidateLogs([]);
-            } catch {}
-          }}
+          onPress={runDisconnect}
         >
           <Text style={styles.actionButtonText}>Disconnect</Text>
         </TouchableOpacity>
@@ -719,9 +805,18 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
   },
   stateText: {
-    fontSize: 15,
+    fontSize: 14,
     color: '#FFF',
     fontWeight: '500',
+  },
+  input: {
+    backgroundColor: '#2C2C2E',
+    color: '#FFF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    fontSize: 14,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   logContainer: {
     backgroundColor: '#000',
@@ -745,9 +840,6 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     borderLeftWidth: 3,
-    borderLeftColor: '#3A3A3C',
-  },
-  espDevice: {
     borderLeftColor: '#34C759',
   },
   deviceName: {
@@ -760,5 +852,27 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     marginTop: 2,
+  },
+  kvBlock: {
+    backgroundColor: '#000',
+    color: '#FFF',
+    fontSize: 11,
+    padding: 10,
+    borderRadius: 8,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  kvBlockContainer: {
+    backgroundColor: '#000',
+    padding: 10,
+    borderRadius: 8,
+    gap: 4,
+  },
+  kvLine: {
+    fontSize: 12,
+    color: '#FFF',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  kvKey: {
+    color: '#8E8E93',
   },
 });

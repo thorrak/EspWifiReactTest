@@ -53,8 +53,9 @@
         }
       ],
       [
-        "react-native-ble-plx",
+        "@orbital-systems/react-native-esp-idf-provisioning",
         {
+          "isBackgroundEnabled": false,
           "neverForLocation": true
         }
       ],
