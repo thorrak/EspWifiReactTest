@@ -1,10 +1,10 @@
 # ESP WiFi React Test
 
-Example/test app for the [`esp-wifi-config-react-native`](https://github.com/thorrak/esp_wifi_config_react_native) library, tracking the **`main`** branch (v2.0.0+).
+Example/test app for the [`esp-wifi-config-react-native`](https://github.com/WiFiConfig/esp-wifi-config-react-native) library, tracking the **`main`** branch (v2.0.0+).
 
 ## Firmware compatibility
 
-The library — and therefore this app — talks ESP-IDF Network Provisioning over BLE via `@orbital-systems/react-native-esp-idf-provisioning`. It requires ESP32 devices running [`esp_wifi_config`](https://github.com/thorrak/esp_wifi_config) **≥ 0.2.0** (0.2.3 recommended). 0.1.0 provisions but cannot serve the `esp-wifi-config-network-info` endpoint (registered without its GATT characteristic). Older `0.0.x` firmware uses the v1 custom 0xFFE0 GATT protocol and will not be discoverable.
+The library — and therefore this app — talks ESP-IDF Network Provisioning over BLE via `@orbital-systems/react-native-esp-idf-provisioning`. It requires ESP32 devices running [`esp_wifi_config`](https://github.com/WiFiConfig/esp_wifi_config) **≥ 0.2.0** (0.2.3 recommended). 0.1.0 provisions but cannot serve the `esp-wifi-config-network-info` endpoint (registered without its GATT characteristic). Older `0.0.x` firmware uses the v1 custom 0xFFE0 GATT protocol and will not be discoverable.
 
 ## Project Structure
 
@@ -25,7 +25,7 @@ The library — and therefore this app — talks ESP-IDF Network Provisioning ov
 ## Key Architecture Decisions
 
 ### Library Install Source
-Installed from GitHub: `github:thorrak/esp_wifi_config_react_native` (default branch `main`). npm runs the library's `prepare` script (`bob build`) on install to generate `lib/`. Metro resolves to the TypeScript source via the package's `react-native` field, so library edits on `main` take effect after `npm update esp-wifi-config-react-native` (or a fresh `npm install` if the lockfile pins an older commit) plus a Metro restart.
+Installed from GitHub: `github:WiFiConfig/esp-wifi-config-react-native` (default branch `main`). npm runs the library's `prepare` script (`bob build`) on install to generate `lib/`. Metro resolves to the TypeScript source via the package's `react-native` field, so library edits on `main` take effect after `npm update esp-wifi-config-react-native` (or a fresh `npm install` if the lockfile pins an older commit) plus a Metro restart.
 
 ### BLE peer dep
 The library wraps `@orbital-systems/react-native-esp-idf-provisioning`, which in turn wraps Espressif's official iOS / Android provisioning SDKs. We declare it as a direct dependency. Its Expo config plugin is wired up in `app.json`:
